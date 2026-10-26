@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Battery charge limit for the Acer Swift 3 SF314-52 (BIOS V1.08).
+#
+# The EC keeps a shadow of the charger's ChargeOption register at EC RAM 0x298.
+# Bit 0 is CHRG_INHIBIT: setting it puts the charger in pass-through (system runs
+# on AC, battery idle). This script sets the bit at STOP% and clears it at START%.
+# It is meant to run every minute from charge-limit.timer.
+#
+#   charge-limit tick     apply the limit once (what the timer runs)
+#   charge-limit status   apply, then print the current state
+#
+# Settings live in /etc/charge-limit.conf (ENABLED, STOP, START).
+set -euo pipefail
+
+CONF=/etc/charge-limit.conf
+STATE=/run/charge-limit.state
+B=/sys/class/power_supply/BAT0
+ENABLED=1 STOP=80 START=75
+[ -r "$CONF" ] && . "$CONF"
+
+[ "$(id -u)" = 0 ] || { echo "charge-limit: must run as root" >&2; exit 1; }
+if [ "$(cat /sys/class/dmi/id/product_name)" != "Swift SF314-52" ] && [ "${FORCE:-0}" != 1 ]; then
+  echo "charge-limit: this is not an Acer Swift SF314-52, refusing to touch the EC" >&2
+  exit 1
+fi
+
+exec 9>/run/charge-limit.lock
+flock 9
+modprobe acpi_call
+call() { echo "$1" > /proc/acpi/call; tr -d '\0' < /proc/acpi/call; }
+rd() { call "\\_SB.PCI0.LPCB.EC0.RR_M $1"; }
+wr() { call "\\_SB.PCI0.LPCB.EC0.WR_M $1 $2" >/dev/null; }
+
+# EC 0x288 holds the charger ID. 0x0b is the only value this was verified on.
+id=$(rd 0x288)
+[ "$id" = 0xb ] || { logger -t charge-limit "unexpected EC 0x288=$id, not touching EC"; exit 1; }
+
+v=$(( $(rd 0x298) ))
+cap=$(cat $B/capacity)
+want=$(( v & 1 ))
+if [ "$ENABLED" != 1 ]; then want=0
+elif [ "$cap" -ge "$STOP" ]; then want=1
+elif [ "$cap" -le "$START" ]; then want=0
+fi
+if [ "$want" != $(( v & 1 )) ]; then
+  new=$(( want ? v | 1 : v & ~1 & 0xff ))
+  wr 0x298 "$(printf 0x%x $new)"
+  logger -t charge-limit "battery ${cap}%: inhibit=$want (0x298 $(printf 0x%x $v) -> $(printf 0x%x $new))"
+  v=$new
+fi
+
+# EC 0x39a/0x39b: battery current in mA, signed (negative = discharging).
+cur=$(( $(rd 0x39b) << 8 | $(rd 0x39a) ))
+[ $cur -ge 32768 ] && cur=$(( cur - 65536 ))
+echo "$(date '+%F %T') battery=${cap}% current=${cur}mA ac=$(cat /sys/class/power_supply/AC0/online) inhibit=$(( v & 1 )) limit=$([ "$ENABLED" = 1 ] && echo "$START-$STOP%" || echo off)" > $STATE
+[ "${1:-tick}" = status ] && cat $STATE
+exit 0

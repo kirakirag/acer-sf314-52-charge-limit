@@ -1,0 +1,6 @@
+[Unit]
+Description=Battery charge limit (EC charge inhibit)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/charge-limit tick
