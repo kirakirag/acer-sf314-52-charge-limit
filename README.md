@@ -37,6 +37,7 @@ power events, so the timer puts it back within a minute.
 ```
 sudo charge-limit status          # battery %, current, inhibit state, limit
 journalctl -t charge-limit        # every time the limit switched on or off
+journalctl -t charge-limit-ec     # EC charger state, logged when it changes
 ```
 
 To change the thresholds or turn the limit off, edit `/etc/charge-limit.conf`:

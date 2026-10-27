@@ -14,6 +14,7 @@ set -euo pipefail
 
 CONF=/etc/charge-limit.conf
 STATE=/run/charge-limit.state
+ECSTATE=/run/charge-limit.ec
 B=/sys/class/power_supply/BAT0
 ENABLED=1 STOP=80 START=75
 [ -r "$CONF" ] && . "$CONF"
@@ -52,6 +53,17 @@ fi
 # EC 0x39a/0x39b: battery current in mA, signed (negative = discharging).
 cur=$(( $(rd 0x39b) << 8 | $(rd 0x39a) ))
 [ $cur -ge 32768 ] && cur=$(( cur - 65536 ))
+
+# Log EC battery/charger state to the journal whenever it changes, to catch the
+# EC refusing to charge on AC (0x6c1 bit 5 cleared, charger registers zeroed).
+# Only changes are logged; the battery current is shown but not compared.
+ec="ac=$(cat /sys/class/power_supply/AC0/online) status=$(tr -d ' ' < $B/status)"
+for a in 0x298 0x2c2 0x2c3 0x2c4 0x2c5 0x602 0x6c0 0x6c1 0x6c2 0x6c3; do ec="$ec ${a#0x}=$(rd $a)"; done
+if [ "$ec" != "$(cat $ECSTATE 2>/dev/null)" ]; then
+  logger -t charge-limit-ec "battery=${cap}% current=${cur}mA $ec"
+  echo "$ec" > $ECSTATE
+fi
+
 echo "$(date '+%F %T') battery=${cap}% current=${cur}mA ac=$(cat /sys/class/power_supply/AC0/online) inhibit=$(( v & 1 )) limit=$([ "$ENABLED" = 1 ] && echo "$START-$STOP%" || echo off)" > $STATE
 [ "${1:-tick}" = status ] && cat $STATE
 exit 0
